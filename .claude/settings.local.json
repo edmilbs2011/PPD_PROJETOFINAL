@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod +x run_*.sh)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(.venv/bin/python -m compileall -q common server client)",
+      "Bash(.venv/bin/python -c \"import Pyro5; print\\('Pyro5', Pyro5.__version__\\)\")",
+      "Bash(.venv/bin/python -c ' *)",
+      "Bash(.venv/bin/python -c \"import tkinter; print\\('tkinter OK', tkinter.TkVersion\\)\")",
+      "Bash(.venv/bin/python -m compileall -q client/ui.py)"
+    ]
+  }
+}

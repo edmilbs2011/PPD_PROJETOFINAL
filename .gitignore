@@ -1,0 +1,14 @@
+# Ambiente virtual e caches Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Dados de runtime (gerados pela aplicação)
+server_data/*.db
+server_data/*.db.bak-*
+client_data/*.json
+
+# IDE / SO
+.idea/
+.vscode/
+.DS_Store

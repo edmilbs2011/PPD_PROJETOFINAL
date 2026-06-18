@@ -1,0 +1,2 @@
+Pyro5>=5.15
+# tkinter, sqlite3, queue, threading, dataclasses fazem parte da biblioteca padrão do Python.
