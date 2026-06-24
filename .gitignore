@@ -1,4 +1,5 @@
 # Ambiente virtual e caches Python
+.claude
 .venv/
 __pycache__/
 *.py[cod]
@@ -12,3 +13,8 @@ client_data/*.json
 .idea/
 .vscode/
 .DS_Store
+
+# Documentação local (não versionada)
+ARQUITETURA.md
+GUIA_DO_CODIGO.md
+FLUXO_PRODUTOR_CONSUMIDOR.md
