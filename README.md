@@ -3,8 +3,6 @@
 Chat de contatos com entrega instantânea (online) e filas offline gerenciadas por
 um MOM no servidor, acessado via RMI (Pyro5). UI em Tkinter.
 
-Veja [ARQUITETURA.md](ARQUITETURA.md) para o desenho completo.
-
 ## Funcionalidades
 
 - **Lista de contatos** sempre visível, com presença ● online / ○ offline.
