@@ -3,6 +3,13 @@
 Chat de contatos com entrega instantânea (online) e filas offline gerenciadas por
 um MOM no servidor, acessado via RMI (Pyro5). UI em Tkinter.
 
+Todas as trocas de mensagens passam por um **Broker** que aplica a estratégia
+**publish/subscribe** no modelo *tópico-por-usuário*: cada cliente **assina**
+(`subscribe`) o tópico com o seu próprio nome para receber, e **publica**
+(`publish`) no tópico de um destinatário para enviar. O Broker entrega a
+publicação aos assinantes ativos (push via callback) ou a guarda na fila durável
+do MOM quando o destinatário está offline.
+
 ## Funcionalidades
 
 - **Lista de contatos** sempre visível, com presença ● online / ○ offline.
@@ -76,8 +83,13 @@ python -m client.main alice
 
 ```
 common/        models.py, config.py
-server/        main.py, message_server.py, presence.py, mom.py
+server/        main.py, message_server.py, broker.py, subscriptions.py, presence.py, mom.py
 client/        main.py, ui.py, service.py, callback.py, contacts.py
 server_data/   mom.db        (filas + histórico; criado no 1º start)
 client_data/   <nome>_contacts.json  (lista de contatos por cliente)
 ```
+
+No servidor, `broker.py` (Broker publish/subscribe) orquestra
+`subscriptions.py` (assinaturas por tópico), `presence.py` (presença + URIs de
+callback) e `mom.py` (fila durável + histórico); `message_server.py` é apenas a
+fachada RMI Pyro5.

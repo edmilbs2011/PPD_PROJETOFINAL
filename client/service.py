@@ -1,8 +1,10 @@
 """ClientService — fachada do lado do cliente.
 
-Encapsula:
-  * o daemon Pyro5 e o ClientCallback (provedor de RMI);
-  * o proxy para o MessageServer (consumidor de RMI);
+No modelo publish/subscribe do Broker, este serviço é ao mesmo tempo
+**assinante** (assina o próprio tópico para receber) e **publicador** (publica no
+tópico de um destinatário para enviar). Encapsula:
+  * o daemon Pyro5 e o ClientCallback (provedor de RMI, entrega das publicações);
+  * o proxy para o MessageServer/Broker (consumidor de RMI);
   * a `inbox` thread-safe que liga o callback (thread do daemon) à UI.
 
 Não conhece Tkinter — a UI consome a `inbox` e chama estes métodos.
@@ -55,30 +57,36 @@ class ClientService:
 
     # -- operações remotas (consumidor de RMI) -----------------------------
     def register(self) -> list[Message]:
-        """Requisito 7: entra no sistema (cria fila) e recebe pendentes."""
+        """Requisito 7: ASSINA o próprio tópico no Broker e recebe pendentes.
+
+        Assinar (subscribe) o tópico com o próprio nome é o que habilita este
+        cliente a receber as publicações destinadas a ele.
+        """
         with self._server() as s:
-            pending = s.register(self.contact_name, self._callback_uri)
+            pending = s.subscribe(self.contact_name, self._callback_uri)
         return [Message.from_dict(m) for m in pending]
 
     def set_online(self) -> list[Message]:
-        """Requisito 2: fica ONLINE e recebe o flush da fila."""
+        """Requisito 2: fica ONLINE (assina o tópico) e recebe o flush da fila."""
         with self._server() as s:
-            pending = s.set_status(self.contact_name, True, self._callback_uri)
+            pending = s.subscribe(self.contact_name, self._callback_uri)
         return [Message.from_dict(m) for m in pending]
 
     def set_offline(self) -> None:
+        """Requisito 2: fica OFFLINE cancelando a assinatura do tópico."""
         with self._server() as s:
             s.set_status(self.contact_name, False, None)
 
     def send(self, recipient: str, body: str) -> tuple[str, str]:
-        """Requisitos 3/6: envia; servidor decide entre DELIVERED e QUEUED.
+        """Requisitos 3/6: PUBLICA no tópico do destinatário.
 
-        O timestamp é carimbado AQUI (no remetente), com o fuso local embutido,
-        e propagado inalterado ao destinatário. Retorna (resultado, timestamp).
+        O Broker decide entre DELIVERED e QUEUED. O timestamp é carimbado AQUI
+        (no remetente), com o fuso local embutido, e propagado inalterado ao
+        destinatário. Retorna (resultado, timestamp).
         """
         timestamp = datetime.now().astimezone().isoformat()
         with self._server() as s:
-            result = s.send_message(self.contact_name, recipient, body, timestamp)
+            result = s.publish(self.contact_name, recipient, body, timestamp)
         return result, timestamp
 
     def reject(self, original_sender: str, original_body: str = "",
@@ -136,7 +144,7 @@ class ClientService:
     def shutdown(self) -> None:
         try:
             with self._server() as s:
-                s.unregister(self.contact_name)
+                s.unsubscribe(self.contact_name)
         except Exception:
             pass
         self._daemon.shutdown()

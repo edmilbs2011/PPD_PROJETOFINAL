@@ -1,16 +1,22 @@
 """Objeto remoto principal: MessageServer (interface §3.1 da ARQUITETURA.md).
 
-Atua como diretório de presença e como broker de mensagens offline (MOM).
-Decide, a cada envio, entre entrega instantânea (callback) e enfileiramento.
+É a **fachada RMI** exposta pelo servidor. Toda troca de mensagens é delegada ao
+`MessageBroker`, que implementa a estratégia **publish/subscribe** (modelo
+tópico-por-usuário): um cliente **assina** o próprio tópico para receber e
+**publica** no tópico de um destinatário para enviar. O Broker decide, a cada
+publicação, entre entrega instantânea (callback) e enfileiramento durável (MOM).
 
-Também mantém o **histórico permanente** de todas as mensagens e o **status de
-leitura** confirmado pelo cliente (ACK): `ack_read` marca a mensagem como lida e
-a remove da fila; `get_history`/`get_sent`/`get_conversation` servem as consultas
-da UI. Ver §12 da ARQUITETURA.md.
+Além do roteamento, o servidor serve as consultas da UI: **histórico permanente**
+de todas as mensagens e o **status de leitura** confirmado pelo cliente (ACK).
+`ack_read` marca a mensagem como lida e a remove da fila; `get_history`/
+`get_sent`/`get_conversation` alimentam as janelas de histórico. Ver §12.
 
 Identidade dos clientes é **case-insensitive**: 'Pedro', 'pedro' e 'PEDRO'
-referem-se ao mesmo cliente. A forma canônica (minúsculas) é usada como chave
-de presença e nome da fila no MOM.
+referem-se ao mesmo cliente (e ao mesmo tópico). A forma canônica (minúsculas) é
+a chave de presença, de assinatura e de fila.
+
+Os nomes `register`/`send_message` são preservados como **aliases** de
+`subscribe`/`publish` para compatibilidade com clientes já existentes.
 """
 from __future__ import annotations
 
@@ -18,13 +24,20 @@ import Pyro5.api
 
 from common import config
 from common.models import Message, canonical_name, validate_contact_name
+from server.broker import MessageBroker
 from server.mom import MessageQueueManager
 from server.presence import PresenceRegistry
 
 
 @Pyro5.api.expose
 class MessageServer:
-    def __init__(self, mom: MessageQueueManager, presence: PresenceRegistry) -> None:
+    def __init__(
+        self,
+        broker: MessageBroker,
+        mom: MessageQueueManager,
+        presence: PresenceRegistry,
+    ) -> None:
+        self._broker = broker
         self._mom = mom
         self._presence = presence
 
@@ -46,7 +59,7 @@ class MessageServer:
                 cb.ping()
             return True
         except Exception:
-            self._presence.set_offline(key)
+            self._broker.unsubscribe(key)
             return False
 
     def is_name_available(self, contact_name: str) -> bool:
@@ -54,13 +67,14 @@ class MessageServer:
         return not self._name_in_use(canonical_name(contact_name))
 
     # ------------------------------------------------------------------ #
-    # Requisito 7: ao entrar, o cliente pede para criar sua fila.
+    # Requisito 7: ao entrar, o cliente ASSINA seu próprio tópico.
     # ------------------------------------------------------------------ #
-    def register(self, contact_name: str, callback_uri: str) -> list[dict]:
-        """Critica o nome, garante unicidade, registra ONLINE e devolve pendentes.
+    def subscribe(self, contact_name: str, callback_uri: str) -> list[dict]:
+        """Critica o nome, garante unicidade, assina o tópico e devolve pendentes.
 
-        Levanta ValueError se o nome for inválido ou já estiver em uso por outro
-        cliente conectado (comparação case-insensitive).
+        Assinar o próprio tópico (nome canônico) é o que habilita o cliente a
+        receber publicações destinadas a ele. Levanta ValueError se o nome for
+        inválido ou já estiver em uso por outro cliente conectado.
         """
         name = validate_contact_name(contact_name)  # critica o formato
         key = canonical_name(name)
@@ -69,30 +83,30 @@ class MessageServer:
                 f"Já existe um cliente conectado com o nome '{name}'. "
                 "Escolha outro nome."
             )
-        self._mom.create_queue(key)
-        self._presence.set_online(key, callback_uri)
-        # Flush não-destrutivo: as pendentes só saem da fila quando confirmadas
-        # por ack_read (entrega at-least-once com confirmação).
-        pending = self._mom.peek(key)
-        print(f"[register] {name} ({key}) ONLINE — {len(pending)} pendente(s)")
+        pending = self._broker.subscribe(key, callback_uri)
         return [m.to_dict() for m in pending]
 
-    def unregister(self, contact_name: str) -> None:
-        """Cliente saindo do sistema; libera a presença (a fila permanece)."""
-        key = canonical_name(contact_name)
-        self._presence.remove(key)
-        print(f"[unregister] {contact_name} saiu")
+    #: Alias de compatibilidade (o antigo "register" agora é uma assinatura).
+    register = subscribe
+
+    def unsubscribe(self, contact_name: str) -> None:
+        """Cliente saindo do sistema; cancela assinaturas (a fila permanece)."""
+        self._broker.remove_subscriber(canonical_name(contact_name))
+        print(f"[unsubscribe] {contact_name} saiu")
+
+    #: Alias de compatibilidade.
+    unregister = unsubscribe
 
     # ------------------------------------------------------------------ #
-    # Requisito 2: alternar online/offline.
+    # Requisito 2: alternar online/offline = assinar/cancelar o tópico.
     # ------------------------------------------------------------------ #
     def set_status(
         self, contact_name: str, online: bool, callback_uri: str | None = None
     ) -> list[dict]:
         """Muda o estado do cliente.
 
-        ONLINE  -> registra a URI e faz flush da fila (retorna as mensagens).
-        OFFLINE -> remove a URI; envios futuros vão para a fila.
+        ONLINE  -> assina o tópico e faz flush da fila (retorna as mensagens).
+        OFFLINE -> cancela a assinatura; publicações futuras vão para a fila.
         """
         key = canonical_name(contact_name)
         if online:
@@ -102,72 +116,40 @@ class MessageServer:
                 raise ValueError(
                     f"Já existe um cliente conectado com o nome '{contact_name}'."
                 )
-            self._mom.create_queue(key)
-            self._presence.set_online(key, callback_uri)
-            pending = self._mom.peek(key)  # removidas só após ack_read
-            print(f"[status] {contact_name} ONLINE — flush de {len(pending)}")
+            pending = self._broker.subscribe(key, callback_uri)
             return [m.to_dict() for m in pending]
         else:
-            self._presence.set_offline(key)
+            self._broker.unsubscribe(key)
             print(f"[status] {contact_name} OFFLINE")
             return []
 
     # ------------------------------------------------------------------ #
-    # Requisitos 3, 4, 6: envio com decisão online/offline.
+    # Requisitos 3, 4, 6: PUBLICAÇÃO com decisão online/offline no Broker.
     # ------------------------------------------------------------------ #
-    def send_message(
+    def publish(
         self, sender: str, recipient: str, body: str, timestamp: str | None = None
     ) -> str:
-        """Entrega instantânea se o destinatário estiver online; senão, enfileira.
+        """Publica no tópico do destinatário; o Broker decide a entrega.
 
         O `timestamp` é gerado pelo remetente (com seu fuso) e apenas propagado,
-        para que ambos os lados exibam a mesma hora. Retorna "DELIVERED" ou "QUEUED".
+        para que ambos os lados exibam a mesma hora. Retorna "DELIVERED" (algum
+        assinante recebeu na hora) ou "QUEUED" (ficou na fila durável).
         """
         rkey = canonical_name(recipient)
-        # message.recipient guarda a identidade canônica (chave da fila no MOM).
+        # message.recipient guarda a identidade canônica (o tópico / fila).
         message = Message(sender=sender, recipient=rkey, body=body)
         if timestamp:
             message.timestamp = timestamp
+        return self._broker.publish(message)
 
-        # Histórico permanente: registra TODA mensagem como "não lida" (read_at
-        # NULL). Só o ACK do cliente (ack_read) a marca como lida.
-        self._mom.log_message(message)
-
-        # Copia a URI sob lock e invoca o callback FORA do lock (evita travar o
-        # registro durante uma chamada de rede potencialmente lenta).
-        uri = self._presence.get_callback_uri(rkey)
-        if uri is not None:
-            # Entrega instantânea, mas NÃO é tratada como lida aqui: o cliente
-            # confirma com ack_read após renderizar. Por isso enfileiramos
-            # também — a mensagem só sai da fila no ACK (se o push se perder
-            # entre receber e exibir, ela é reentregue no próximo login).
-            self._mom.enqueue(message)
-            try:
-                with Pyro5.api.Proxy(uri) as cb:
-                    cb.receive_message(
-                        message.sender, message.body, message.timestamp, message.msg_id
-                    )
-                print(f"[send] {sender} -> {recipient}: DELIVERED")
-                return "DELIVERED"
-            except Exception as exc:  # destinatário inacessível: degrada p/ offline
-                print(f"[send] falha no push p/ {recipient} ({exc!r}); enfileirando")
-                self._presence.set_offline(rkey)
-                print(f"[send] {sender} -> {recipient}: QUEUED ({self._mom.count(rkey)} na fila)")
-                return "QUEUED"
-
-        # Destinatário offline: vai para a fila do destinatário.
-        self._mom.enqueue(message)
-        print(f"[send] {sender} -> {recipient}: QUEUED ({self._mom.count(rkey)} na fila)")
-        return "QUEUED"
+    #: Alias de compatibilidade (o antigo "send_message" agora é uma publicação).
+    send_message = publish
 
     def reject_message(
         self, rejecter: str, original_sender: str, original_body: str = "",
         msg_id: str | None = None,
     ) -> None:
-        """Encaminha ao `original_sender` o aviso de que `rejecter` recusou a mensagem.
-
-        Se o remetente original estiver online, faz push do aviso; se estiver
-        offline, enfileira como mensagem comum para não se perder.
+        """`rejecter` recusa uma mensagem; avisa o remetente original via Broker.
 
         Se `msg_id` for informado, a mensagem recusada sai da fila de `rejecter`
         (não será reentregue), mas permanece "não lida" no histórico — ele nunca
@@ -175,24 +157,7 @@ class MessageServer:
         """
         if msg_id:
             self._mom.reject(canonical_name(rejecter), msg_id)
-        skey = canonical_name(original_sender)
-        uri = self._presence.get_callback_uri(skey)
-        if uri is not None:
-            try:
-                with Pyro5.api.Proxy(uri) as cb:
-                    cb.notify_rejection(rejecter, original_body)
-                print(f"[reject] {rejecter} recusou msg de {original_sender}")
-                return
-            except Exception:
-                self._presence.set_offline(skey)
-        # Remetente offline: deixa um aviso na fila dele.
-        notice = Message(
-            sender=rejecter, recipient=skey,
-            body=f"(rejeitou sua mensagem) {original_body}".strip(),
-        )
-        self._mom.log_message(notice)
-        self._mom.enqueue(notice)
-        print(f"[reject] {rejecter} recusou msg de {original_sender} (enfileirado)")
+        self._broker.publish_rejection(rejecter, original_sender, original_body)
 
     # ------------------------------------------------------------------ #
     # Consulta de presença para a UI.

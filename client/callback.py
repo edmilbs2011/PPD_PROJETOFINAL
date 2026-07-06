@@ -1,4 +1,7 @@
-"""ClientCallback — objeto remoto que o servidor invoca para entrega instantânea.
+"""ClientCallback — objeto remoto que o Broker invoca para entregar publicações.
+
+É o ponto de recepção do assinante: quando alguém publica no tópico deste
+cliente e ele está online, o Broker faz push por aqui (`receive_message`).
 
 IMPORTANTE (concorrência): este callback roda na thread do daemon Pyro5, NÃO na
 thread do Tkinter. Por isso ele apenas empurra os eventos para uma fila
@@ -16,7 +19,7 @@ class ClientCallback:
     def __init__(self, inbox: "queue.Queue[tuple]") -> None:
         self._inbox = inbox
 
-    # Requisito 3: recebimento instantâneo quando online.
+    # Requisito 3: recebimento instantâneo de uma publicação quando online.
     def receive_message(
         self, sender: str, body: str, timestamp: str, msg_id: str | None = None
     ) -> None:
