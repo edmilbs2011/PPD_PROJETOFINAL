@@ -1,7 +1,9 @@
 """Bootstrap do Servidor de Mensagens.
 
-Sobe o daemon Pyro5, instancia MOM + PresenceRegistry + MessageServer e
-registra o objeto no Name Server sob o nome lógico `PPD.messageserver`.
+Sobe o daemon Pyro5 e monta a cadeia de colaboradores do Broker:
+MOM (durabilidade) + PresenceRegistry (presença) + SubscriptionRegistry
+(assinaturas) → MessageBroker (publish/subscribe) → MessageServer (fachada RMI).
+Registra o objeto no Name Server sob o nome lógico `PPD.messageserver`.
 
 Pré-requisito: o Pyro5 Name Server deve estar rodando
     python -m Pyro5.nameserver
@@ -11,9 +13,11 @@ from __future__ import annotations
 import Pyro5.api
 
 from common import config
+from server.broker import MessageBroker
 from server.message_server import MessageServer
 from server.mom import MessageQueueManager
 from server.presence import PresenceRegistry
+from server.subscriptions import SubscriptionRegistry
 
 
 def main() -> None:
@@ -21,7 +25,9 @@ def main() -> None:
 
     mom = MessageQueueManager(config.MOM_DB_PATH)
     presence = PresenceRegistry()
-    server = MessageServer(mom, presence)
+    subscriptions = SubscriptionRegistry()
+    broker = MessageBroker(mom, presence, subscriptions)
+    server = MessageServer(broker, mom, presence)
 
     daemon = Pyro5.api.Daemon(host=config.PYRO_HOST)
     uri = daemon.register(server)
